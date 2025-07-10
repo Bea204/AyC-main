@@ -12,10 +12,11 @@ $success = $error = '';
 
 // Obtener cotización
 $stmt = $mysqli->prepare("
-    SELECT c.*, u.username as usuario_nombre
+    SELECT c.*, u.username as usuario_nombre, ec.nombre_estado
     FROM cotizaciones c
-    LEFT JOIN users u ON c.usuario_id = u.user_id
-    WHERE c.cotizacion_id = ? AND c.estado = 'aprobada'
+    LEFT JOIN users u ON c.user_id = u.user_id
+    LEFT JOIN est_cotizacion ec ON c.estado_id = ec.est_cot_id
+    WHERE c.cotizacion_id = ? AND ec.nombre_estado = 'Aprobada'
 ");
 $stmt->bind_param('i', $cotizacion_id);
 $stmt->execute();
@@ -43,11 +44,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $mysqli->begin_transaction();
     
     try {
-        // Obtener tipo de movimiento "Venta"
+        // Verificar si existe el tipo de movimiento "Venta", si no, crearlo
         $stmt = $mysqli->prepare("SELECT movement_type_id FROM movement_types WHERE name = 'Venta' LIMIT 1");
         $stmt->execute();
         $movement_type = $stmt->get_result()->fetch_assoc();
         $movement_type_id = $movement_type['movement_type_id'] ?? null;
+        
+        if (!$movement_type_id) {
+            // Crear tipo de movimiento "Venta"
+            $stmt = $mysqli->prepare("INSERT INTO movement_types (name) VALUES ('Venta')");
+            $stmt->execute();
+            $movement_type_id = $stmt->insert_id;
+            $stmt->close();
+        }
         
         // Registrar movimientos de inventario para cada producto
         while ($producto = $productos->fetch_assoc()) {
@@ -80,7 +89,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Actualizar estado de la cotización
         $stmt = $mysqli->prepare("
             UPDATE cotizaciones 
-            SET estado = 'convertida', updated_at = NOW() 
+            SET estado_id = (SELECT est_cot_id FROM est_cotizacion WHERE nombre_estado = 'Convertida'), updated_at = NOW() 
             WHERE cotizacion_id = ?
         ");
         $stmt->bind_param('i', $cotizacion_id);
@@ -88,8 +97,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Registrar en historial
         $stmt = $mysqli->prepare("
-            INSERT INTO cotizaciones_historial (cotizacion_id, accion, comentario, usuario_id) 
-            VALUES (?, 'convertida', 'Cotización convertida a venta', ?)
+            INSERT INTO cotizaciones_historial (cotizacion_id, accion_id, comentario, user_id) 
+            VALUES (?, (SELECT accion_id FROM cotizaciones_acciones WHERE nombre_accion = 'Convertida'), 'Cotización convertida a venta', ?)
         ");
         $usuario_id = $_SESSION['user_id'] ?? $_SESSION['admin_id'] ?? null;
         $stmt->bind_param('ii', $cotizacion_id, $usuario_id);

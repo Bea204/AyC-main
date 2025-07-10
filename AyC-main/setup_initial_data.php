@@ -7,14 +7,14 @@ try {
     // 1. Insertar roles
     echo "📋 Insertando roles...\n";
     $roles = [
-        ['role_name' => 'admin', 'description' => 'Administrador del sistema', 'permissions' => '{"products":{"read":true,"write":true,"delete":true},"movements":{"read":true,"write":true,"delete":true},"cotizaciones":{"read":true,"write":true,"delete":true},"insumos":{"read":true,"write":true,"delete":true},"equipos":{"read":true,"write":true,"delete":true},"usuarios":{"read":true,"write":true,"delete":true},"reportes":{"read":true,"write":true},"configuracion":{"read":true,"write":true}}'],
-        ['role_name' => 'user', 'description' => 'Usuario estándar', 'permissions' => '{"products":{"read":true,"write":true,"delete":false},"movements":{"read":true,"write":true,"delete":false},"cotizaciones":{"read":true,"write":true,"delete":false},"insumos":{"read":true,"write":true,"delete":false},"equipos":{"read":true,"write":false,"delete":false},"usuarios":{"read":false,"write":false,"delete":false},"reportes":{"read":true,"write":false},"configuracion":{"read":false,"write":false}}'],
-        ['role_name' => 'viewer', 'description' => 'Solo visualización', 'permissions' => '{"products":{"read":true,"write":false,"delete":false},"movements":{"read":true,"write":false,"delete":false},"cotizaciones":{"read":true,"write":false,"delete":false},"insumos":{"read":true,"write":false,"delete":false},"equipos":{"read":true,"write":false,"delete":false},"usuarios":{"read":false,"write":false,"delete":false},"reportes":{"read":true,"write":false},"configuracion":{"read":false,"write":false}}']
+        ['role_name' => 'Administrador'],
+        ['role_name' => 'Usuario'],
+        ['role_name' => 'Vendedor']
     ];
     
-    $stmt = $mysqli->prepare("INSERT INTO roles (role_name, description, permissions) VALUES (?, ?, ?)");
+    $stmt = $mysqli->prepare("INSERT IGNORE INTO roles (role_name) VALUES (?)");
     foreach ($roles as $role) {
-        $stmt->bind_param('sss', $role['role_name'], $role['description'], $role['permissions']);
+        $stmt->bind_param('s', $role['role_name']);
         $stmt->execute();
     }
     echo "✅ Roles insertados correctamente\n\n";
@@ -29,7 +29,7 @@ try {
         ['username' => 'user', 'email' => 'user@empresa.com', 'password' => $user_password, 'first_name' => 'Usuario', 'last_name' => 'Estándar', 'role_id' => 2]
     ];
     
-    $stmt = $mysqli->prepare("INSERT INTO users (username, email, password, first_name, last_name, role_id) VALUES (?, ?, ?, ?, ?, ?)");
+    $stmt = $mysqli->prepare("INSERT IGNORE INTO users (username, email, password, first_name, last_name, role_id) VALUES (?, ?, ?, ?, ?, ?)");
     foreach ($users as $user) {
         $stmt->bind_param('sssssi', $user['username'], $user['email'], $user['password'], $user['first_name'], $user['last_name'], $user['role_id']);
         $stmt->execute();
@@ -47,9 +47,9 @@ try {
         ['name' => 'Equipos de Red', 'description' => 'Switches, routers y equipos de red']
     ];
     
-    $stmt = $mysqli->prepare("INSERT INTO categories (name, description) VALUES (?, ?)");
+    $stmt = $mysqli->prepare("INSERT IGNORE INTO categories (name) VALUES (?)");
     foreach ($categories as $category) {
-        $stmt->bind_param('ss', $category['name'], $category['description']);
+        $stmt->bind_param('s', $category['name']);
         $stmt->execute();
     }
     echo "✅ Categorías insertadas correctamente\n\n";
@@ -63,7 +63,7 @@ try {
         ['name' => 'Distribuidora de Seguridad', 'email' => 'ventas@distribuidoraseguridad.com', 'phone' => '555-0404', 'address' => 'Cancún, Quintana Roo']
     ];
     
-    $stmt = $mysqli->prepare("INSERT INTO suppliers (name, email, phone, address) VALUES (?, ?, ?, ?)");
+    $stmt = $mysqli->prepare("INSERT IGNORE INTO suppliers (name, email, phone, address) VALUES (?, ?, ?, ?)");
     foreach ($suppliers as $supplier) {
         $stmt->bind_param('ssss', $supplier['name'], $supplier['email'], $supplier['phone'], $supplier['address']);
         $stmt->execute();
@@ -73,16 +73,16 @@ try {
     // 5. Insertar tipos de movimiento
     echo "📊 Insertando tipos de movimiento...\n";
     $movement_types = [
-        ['name' => 'Entrada', 'description' => 'Entrada de productos al inventario', 'type' => 'entrada'],
-        ['name' => 'Salida', 'description' => 'Salida de productos del inventario', 'type' => 'salida'],
-        ['name' => 'Ajuste', 'description' => 'Ajuste de inventario', 'type' => 'ajuste'],
-        ['name' => 'Venta', 'description' => 'Venta de productos', 'type' => 'salida'],
-        ['name' => 'Compra', 'description' => 'Compra de productos', 'type' => 'entrada']
+        ['name' => 'Entrada'],
+        ['name' => 'Salida'],
+        ['name' => 'Ajuste'],
+        ['name' => 'Venta'],
+        ['name' => 'Compra']
     ];
     
-    $stmt = $mysqli->prepare("INSERT INTO movement_types (name, description, type) VALUES (?, ?, ?)");
+    $stmt = $mysqli->prepare("INSERT IGNORE INTO movement_types (name) VALUES (?)");
     foreach ($movement_types as $movement_type) {
-        $stmt->bind_param('sss', $movement_type['name'], $movement_type['description'], $movement_type['type']);
+        $stmt->bind_param('s', $movement_type['name']);
         $stmt->execute();
     }
     echo "✅ Tipos de movimiento insertados correctamente\n\n";
@@ -195,6 +195,41 @@ try {
         $stmt->execute();
     }
     echo "✅ Configuración insertada correctamente\n\n";
+
+    // Inicializar estados de cotización
+    echo "Inicializando estados de cotización...\n";
+    $estados_cotizacion = [
+        'Borrador',
+        'Enviada', 
+        'Aprobada',
+        'Rechazada',
+        'Convertida'
+    ];
+
+    foreach ($estados_cotizacion as $estado) {
+        $stmt = $mysqli->prepare("INSERT IGNORE INTO est_cotizacion (nombre_estado) VALUES (?)");
+        $stmt->bind_param('s', $estado);
+        $stmt->execute();
+        $stmt->close();
+    }
+
+    // Inicializar acciones de cotización
+    echo "Inicializando acciones de cotización...\n";
+    $acciones_cotizacion = [
+        'Creada',
+        'Enviada',
+        'Aprobada',
+        'Rechazada',
+        'Convertida',
+        'Modificada'
+    ];
+
+    foreach ($acciones_cotizacion as $accion) {
+        $stmt = $mysqli->prepare("INSERT IGNORE INTO cotizaciones_acciones (nombre_accion) VALUES (?)");
+        $stmt->bind_param('s', $accion);
+        $stmt->execute();
+        $stmt->close();
+    }
 
     echo "🎉 ¡Configuración completada exitosamente!\n\n";
     echo "📋 Resumen de datos insertados:\n";

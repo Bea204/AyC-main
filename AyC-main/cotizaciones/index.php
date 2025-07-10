@@ -43,11 +43,13 @@ $query = "
         cl.telefono as cliente_telefono_real,
         cl.ubicacion as cliente_direccion_real,
         COUNT(cp.cotizacion_producto_id) as total_productos,
-        SUM(cp.precio_total) as subtotal_productos
+        SUM(cp.precio_total) as subtotal_productos,
+        ec.nombre_estado as estado
     FROM cotizaciones c
     LEFT JOIN users u ON c.user_id = u.user_id
     LEFT JOIN clientes cl ON c.cliente_id = cl.cliente_id
     LEFT JOIN cotizaciones_productos cp ON c.cotizacion_id = cp.cotizacion_id
+    LEFT JOIN est_cotizacion ec ON c.estado_id = ec.est_cot_id
     $where_clause
     GROUP BY c.cotizacion_id
     ORDER BY c.created_at DESC

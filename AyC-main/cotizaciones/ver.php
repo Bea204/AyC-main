@@ -11,10 +11,11 @@ $cotizacion_id = intval($_GET['id']);
 
 // Obtener cotización
 $stmt = $mysqli->prepare("
-    SELECT c.*, u.username as usuario_nombre, cl.nombre as cliente_nombre_real, cl.telefono as cliente_telefono_real, cl.ubicacion as cliente_direccion_real
+    SELECT c.*, u.username as usuario_nombre, cl.nombre as cliente_nombre_real, cl.telefono as cliente_telefono_real, cl.ubicacion as cliente_direccion_real, ec.nombre_estado
     FROM cotizaciones c
     LEFT JOIN users u ON c.user_id = u.user_id
     LEFT JOIN clientes cl ON c.cliente_id = cl.cliente_id
+    LEFT JOIN est_cotizacion ec ON c.estado_id = ec.est_cot_id
     WHERE c.cotizacion_id = ?
 ");
 $stmt->bind_param('i', $cotizacion_id);
@@ -32,7 +33,7 @@ $stmt = $mysqli->prepare("
     FROM cotizaciones_productos cp
     LEFT JOIN products p ON cp.product_id = p.product_id
     WHERE cp.cotizacion_id = ?
-    ORDER BY cp.orden
+    ORDER BY cp.cotizacion_producto_id
 ");
 $stmt->bind_param('i', $cotizacion_id);
 $stmt->execute();
@@ -128,6 +129,8 @@ $productos = $stmt->get_result();
         .btn-danger:hover { background: #b71c1c; }
         .btn-success { background: #43a047; }
         .btn-success:hover { background: #2e7d32; }
+        .btn-warning { background: #ff9800; }
+        .btn-warning:hover { background: #f57c00; }
         .estado-badge {
             padding: 4px 12px;
             border-radius: 20px;
@@ -146,6 +149,36 @@ $productos = $stmt->get_result();
             margin-bottom: 20px;
             flex-wrap: wrap;
         }
+        .alert {
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+        }
+        .alert-success {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+        .alert-danger {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+        .btn-close {
+            float: right;
+            font-size: 1.25rem;
+            font-weight: 700;
+            line-height: 1;
+            color: #000;
+            opacity: .5;
+            background: none;
+            border: 0;
+            cursor: pointer;
+        }
+        .btn-close:hover {
+            opacity: .75;
+        }
         @media print { 
             body { background: #fff; } 
             .cotizacion-container { box-shadow: none; border-radius: 0; margin: 0; padding: 0; } 
@@ -155,6 +188,22 @@ $productos = $stmt->get_result();
 </head>
 <body>
     <div class="cotizacion-container">
+        <?php if (isset($_SESSION['success'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <i class="bi bi-check-circle"></i> <?= $_SESSION['success'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php unset($_SESSION['success']); ?>
+        <?php endif; ?>
+        
+        <?php if (isset($_SESSION['error'])): ?>
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <i class="bi bi-exclamation-triangle"></i> <?= $_SESSION['error'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php unset($_SESSION['error']); ?>
+        <?php endif; ?>
+
         <div class="acciones-cotizacion">
             <a href="index.php" class="btn" style="background:#757575;">← Volver al listado</a>
             <a href="editar.php?id=<?= $cotizacion_id ?>" class="btn btn-success">
@@ -163,13 +212,31 @@ $productos = $stmt->get_result();
             <a href="imprimir.php?id=<?= $cotizacion_id ?>" class="btn" target="_blank">
                 <i class="bi bi-printer"></i> Imprimir
             </a>
-            <?php if ($cotizacion['estado'] === 'aprobada'): ?>
+            
+            <!-- Botones de cambio de estado -->
+            <?php if ($cotizacion['nombre_estado'] !== 'Aprobada' && $cotizacion['nombre_estado'] !== 'Convertida'): ?>
+                <button type="button" class="btn btn-success" onclick="cambiarEstado(<?= $cotizacion_id ?>, 3, <?= $cotizacion['estado_id'] ?>)">
+                    <i class="bi bi-check-circle"></i> Aprobar
+                </button>
+            <?php endif; ?>
+            
+            <?php if ($cotizacion['nombre_estado'] === 'Aprobada'): ?>
+                <button type="button" class="btn btn-warning" onclick="cambiarEstado(<?= $cotizacion_id ?>, 4, <?= $cotizacion['estado_id'] ?>)">
+                    <i class="bi bi-x-circle"></i> Rechazar
+                </button>
                 <a href="convertir.php?id=<?= $cotizacion_id ?>" class="btn btn-success">
                     <i class="bi bi-check-circle"></i> Convertir a Venta
                 </a>
             <?php endif; ?>
-            <span class="estado-badge estado-<?= $cotizacion['estado'] ?>">
-                <?= ucfirst($cotizacion['estado']) ?>
+            
+            <?php if ($cotizacion['nombre_estado'] === 'Rechazada'): ?>
+                <button type="button" class="btn btn-success" onclick="cambiarEstado(<?= $cotizacion_id ?>, 3, <?= $cotizacion['estado_id'] ?>)">
+                    <i class="bi bi-check-circle"></i> Aprobar
+                </button>
+            <?php endif; ?>
+            
+            <span class="estado-badge estado-<?= strtolower($cotizacion['nombre_estado']) ?>">
+                <?= htmlspecialchars($cotizacion['nombre_estado']) ?>
             </span>
         </div>
 
@@ -219,12 +286,10 @@ $productos = $stmt->get_result();
                 <?php $i = 1; while ($producto = $productos->fetch_assoc()): ?>
                     <tr>
                         <td><?= $i++ ?></td>
-                        <td class="descripcion"><?= htmlspecialchars($producto['descripcion']) ?></td>
+                        <td class="descripcion"><?= htmlspecialchars($producto['product_name'] ?? 'Producto sin nombre') ?></td>
                         <td class="imagen">
-                            <?php if ($producto['imagen_url']): ?>
-                                <img src="<?= htmlspecialchars($producto['imagen_url']) ?>" alt="Imagen" style="height:38px;">
-                            <?php elseif ($producto['product_image']): ?>
-                                <img src="../<?= htmlspecialchars($producto['product_image']) ?>" alt="Imagen" style="height:38px;">
+                            <?php if ($producto['product_image']): ?>
+                                <img src="../uploads/products/<?= htmlspecialchars($producto['product_image']) ?>" alt="Imagen" style="height:38px;">
                             <?php else: ?>
                                 <span style="color:#ccc;">Sin imagen</span>
                             <?php endif; ?>
@@ -232,7 +297,7 @@ $productos = $stmt->get_result();
                         <td><?= $producto['cantidad'] ?></td>
                         <td>$<?= number_format($producto['precio_unitario'], 2) ?></td>
                         <td class="precio-total">$<?= number_format($producto['precio_total'], 2) ?></td>
-                        <td class="costo-total">$<?= number_format($producto['costo_total'], 2) ?></td>
+                        <td class="costo-total">$<?= number_format($producto['precio_total'], 2) ?></td>
                     </tr>
                 <?php endwhile; ?>
             </tbody>
@@ -268,5 +333,42 @@ $productos = $stmt->get_result();
 
     <script src="../assets/js/script.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function cambiarEstado(cotizacionId, nuevoEstadoId, estadoAnteriorId) {
+            if (confirm('¿Estás seguro de que quieres cambiar el estado de esta cotización?')) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'cambiar_estado.php';
+                
+                const cotizacionIdInput = document.createElement('input');
+                cotizacionIdInput.type = 'hidden';
+                cotizacionIdInput.name = 'cotizacion_id';
+                cotizacionIdInput.value = cotizacionId;
+                
+                const nuevoEstadoInput = document.createElement('input');
+                nuevoEstadoInput.type = 'hidden';
+                nuevoEstadoInput.name = 'nuevo_estado_id';
+                nuevoEstadoInput.value = nuevoEstadoId;
+                
+                const estadoAnteriorInput = document.createElement('input');
+                estadoAnteriorInput.type = 'hidden';
+                estadoAnteriorInput.name = 'estado_anterior_id';
+                estadoAnteriorInput.value = estadoAnteriorId;
+                
+                const redirectInput = document.createElement('input');
+                redirectInput.type = 'hidden';
+                redirectInput.name = 'redirect_url';
+                redirectInput.value = window.location.href;
+                
+                form.appendChild(cotizacionIdInput);
+                form.appendChild(nuevoEstadoInput);
+                form.appendChild(estadoAnteriorInput);
+                form.appendChild(redirectInput);
+                
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+    </script>
 </body>
 </html> 

@@ -9,7 +9,30 @@ $productos = $mysqli->query("SELECT p.product_id, p.product_name, p.sku, p.price
 $productos_array = $productos ? $productos->fetch_all(MYSQLI_ASSOC) : [];
 $categorias = $mysqli->query("SELECT category_id, name FROM categories ORDER BY name ASC");
 $proveedores = $mysqli->query("SELECT supplier_id, name FROM suppliers ORDER BY name ASC");
+
+// Verificar si existen estados de cotización, si no, crearlos
 $estados = $mysqli->query("SELECT est_cot_id, nombre_estado FROM est_cotizacion ORDER BY est_cot_id ASC");
+if ($estados && $estados->num_rows == 0) {
+    // Crear estados básicos si no existen
+    $estados_basicos = [
+        ['nombre_estado' => 'Borrador'],
+        ['nombre_estado' => 'Enviada'],
+        ['nombre_estado' => 'Aprobada'],
+        ['nombre_estado' => 'Rechazada'],
+        ['nombre_estado' => 'Convertida']
+    ];
+    
+    foreach ($estados_basicos as $estado) {
+        $stmt = $mysqli->prepare("INSERT INTO est_cotizacion (nombre_estado) VALUES (?)");
+        $stmt->bind_param('s', $estado['nombre_estado']);
+        $stmt->execute();
+        $stmt->close();
+    }
+    
+    // Recargar estados
+    $estados = $mysqli->query("SELECT est_cot_id, nombre_estado FROM est_cotizacion ORDER BY est_cot_id ASC");
+}
+
 $estados_array = $estados ? $estados->fetch_all(MYSQLI_ASSOC) : [];
 
 $success = $error = '';
@@ -54,8 +77,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $descuento_porcentaje = floatval($_POST['descuento_porcentaje']);
         $estado_id = intval($_POST['estado_id']);
         $usuario_id = $_SESSION['user_id'] ?? $_SESSION['admin_id'] ?? null;
-        $stmt = $mysqli->prepare("INSERT INTO cotizaciones (cliente_id, fecha_cotizacion, validez_dias, condiciones_pago, observaciones, descuento_porcentaje, estado_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param('isissdii', $cliente_id, $fecha_cotizacion, $validez_dias, $condiciones_pago, $observaciones, $descuento_porcentaje, $estado_id, $usuario_id);
+        
+        // Calcular totales
+        $subtotal = 0;
+        foreach ($productos as $prod) {
+            $subtotal += floatval($prod['precio']) * intval($prod['cantidad']);
+        }
+        $descuento_monto = $subtotal * $descuento_porcentaje / 100;
+        $total = $subtotal - $descuento_monto;
+        
+        // Generar número de cotización automáticamente
+        $year = date('Y');
+        $stmt_count = $mysqli->prepare("SELECT COUNT(*) FROM cotizaciones WHERE numero_cotizacion LIKE ?");
+        $pattern = "COT-$year-%";
+        $stmt_count->bind_param('s', $pattern);
+        $stmt_count->execute();
+        $stmt_count->bind_result($count);
+        $stmt_count->fetch();
+        $stmt_count->close();
+        
+        $next_number = $count + 1;
+        $numero_cotizacion = sprintf("COT-%s-%04d", $year, $next_number);
+        
+        $stmt = $mysqli->prepare("INSERT INTO cotizaciones (numero_cotizacion, cliente_id, fecha_cotizacion, validez_dias, subtotal, descuento_porcentaje, descuento_monto, total, condiciones_pago, observaciones, estado_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param('sisidddssiii', $numero_cotizacion, $cliente_id, $fecha_cotizacion, $validez_dias, $subtotal, $descuento_porcentaje, $descuento_monto, $total, $condiciones_pago, $observaciones, $estado_id, $usuario_id);
         if ($stmt->execute()) {
             $cotizacion_id = $stmt->insert_id;
             $stmt->close();
@@ -73,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $stmt_cp = $mysqli->prepare("INSERT INTO cotizaciones_productos (cotizacion_id, product_id, cantidad, precio_unitario, precio_total) VALUES (?, ?, ?, ?, ?)");
                 $precio_total = floatval($prod['precio']) * intval($prod['cantidad']);
-                $stmt_cp->bind_param('iiidd', $cotizacion_id, $product_id, $prod['cantidad'], $prod['precio'], $precio_total);
+                $stmt_cp->bind_param('iiddd', $cotizacion_id, $product_id, $prod['cantidad'], $prod['precio'], $precio_total);
                 $stmt_cp->execute();
                 $stmt_cp->close();
                 // Descontar stock si estado es aprobada (ID 1)
@@ -300,6 +345,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </form>
 </main>
 <script src="../assets/js/script.js"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
@@ -332,15 +378,26 @@ $(document).ready(function() {
 // --- PRODUCTOS ---
 const productosArray = <?= json_encode($productos_array) ?>;
 let productosCotizacion = [];
+
+// Función para normalizar texto (quitar acentos y convertir a minúsculas)
+function normalizarTexto(texto) {
+    return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 $('#buscador_producto').on('input', function() {
-    const query = $(this).val().toLowerCase();
+    const query = normalizarTexto($(this).val());
     let sugerencias = '';
     if (query.length > 0) {
-        const filtrados = productosArray.filter(p =>
-            (p.product_name && p.product_name.toLowerCase().includes(query)) ||
-            (p.sku && p.sku.toLowerCase().includes(query)) ||
-            (p.categoria && p.categoria.toLowerCase().includes(query))
-        );
+        const filtrados = productosArray.filter(p => {
+            const nombreNormalizado = normalizarTexto(p.product_name || '');
+            const skuNormalizado = normalizarTexto(p.sku || '');
+            const categoriaNormalizada = normalizarTexto(p.categoria || '');
+            
+            return nombreNormalizado.includes(query) || 
+                   skuNormalizado.includes(query) || 
+                   categoriaNormalizada.includes(query);
+        });
+        
         filtrados.forEach(p => {
             sugerencias += `<button type='button' class='list-group-item list-group-item-action' data-id='${p.product_id}' data-nombre='${p.product_name}' data-sku='${p.sku}' data-categoria='${p.categoria||''}' data-proveedor='${p.proveedor||''}' data-stock='${p.quantity}' data-precio='${p.price}'>
                 <b>${p.product_name}</b> <span class='badge bg-${p.quantity > 0 ? 'success' : 'danger'} ms-2'>Stock: ${p.quantity}</span><br>
@@ -403,30 +460,79 @@ $(document).on('click', '.btn-eliminar-producto', function() {
 function renderTablaProductos() {
     let html = '';
     let subtotal = 0;
+    
     productosCotizacion.forEach((p, i) => {
         const sub = (parseFloat(p.precio) || 0) * (parseInt(p.cantidad) || 1);
         subtotal += sub;
-        html += `<tr>
-            <td>${p.nombre}</td>
-            <td>${p.sku||''}</td>
-            <td>${p.categoria||''}</td>
-            <td>${p.proveedor||''}</td>
-            <td>${p.stock}</td>
-            <td><input type='number' min='1' value='${p.cantidad}' class='form-control form-control-sm cantidad-producto' data-idx='${i}' style='width:70px;'></td>
-            <td>$${parseFloat(p.precio).toFixed(2)}</td>
-            <td>$${sub.toFixed(2)}</td>
-            <td><button type='button' class='btn btn-danger btn-sm btn-eliminar-producto' data-idx='${i}'><i class='bi bi-trash'></i></button></td>
-        </tr>`;
+        
+        html += `
+            <tr>
+                <td>${p.nombre}</td>
+                <td>${p.sku || ''}</td>
+                <td>${p.categoria || ''}</td>
+                <td>${p.proveedor || ''}</td>
+                <td>${p.stock}</td>
+                <td>
+                    <input type="number" 
+                           min="1" 
+                           step="1" 
+                           value="${p.cantidad}" 
+                           class="form-control form-control-sm cantidad-input" 
+                           data-index="${i}" 
+                           style="width: 80px;">
+                </td>
+                <td>
+                    <input type="number" 
+                           min="0" 
+                           step="0.01" 
+                           value="${p.precio}" 
+                           class="form-control form-control-sm precio-input" 
+                           data-index="${i}" 
+                           style="width: 110px;">
+                </td>
+                <td>$${sub.toFixed(2)}</td>
+                <td>
+                    <button type="button" class="btn btn-danger btn-sm btn-eliminar-producto" data-idx="${i}">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
     });
+    
     $('#tablaProductosCotizacion tbody').html(html);
     $('#subtotal').val(`$${subtotal.toFixed(2)}`);
     recalcularTotales();
 }
-$(document).on('input', '.cantidad-producto', function() {
-    const idx = $(this).data('idx');
-    const val = parseInt($(this).val()) || 1;
-    productosCotizacion[idx].cantidad = val;
-    renderTablaProductos();
+
+// Eventos para cantidad
+$(document).on('input', '.cantidad-input', function() {
+    const index = parseInt($(this).data('index'));
+    const value = parseInt($(this).val()) || 1;
+    
+    if (productosCotizacion[index]) {
+        productosCotizacion[index].cantidad = value;
+        renderTablaProductos();
+    }
+});
+
+$(document).on('focus', '.cantidad-input', function() {
+    $(this).select();
+});
+
+// Eventos para precio
+$(document).on('input', '.precio-input', function() {
+    const index = parseInt($(this).data('index'));
+    const value = parseFloat($(this).val()) || 0;
+    
+    if (productosCotizacion[index]) {
+        productosCotizacion[index].precio = value;
+        renderTablaProductos();
+    }
+});
+
+$(document).on('focus', '.precio-input', function() {
+    $(this).select();
 });
 function recalcularTotales() {
     const subtotal = productosCotizacion.reduce((sum, p) => sum + ((parseFloat(p.precio)||0)*(parseInt(p.cantidad)||1)), 0);
