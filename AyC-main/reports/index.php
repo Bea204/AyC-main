@@ -1,91 +1,29 @@
 <?php
 require_once '../auth/middleware.php';
-require_once '../connection.php';
+require_once 'functions.php';
 
-// Obtener estadísticas reales del sistema
-$stats_query = "
-    SELECT 
-        COUNT(*) as total_products,
-        SUM(quantity * price) as total_value,
-        COUNT(CASE WHEN quantity <= 10 AND quantity > 0 THEN 1 END) as low_stock_products,
-        COUNT(CASE WHEN quantity = 0 THEN 1 END) as out_of_stock,
-        COUNT(CASE WHEN quantity > 10 THEN 1 END) as good_stock_products
-    FROM products
-";
-$stats = $mysqli->query($stats_query)->fetch_assoc();
+// Obtener estadísticas usando las funciones auxiliares
+$stats = getSystemStats($mysqli);
+$quotes_stats = getQuotesStats($mysqli);
+$bobinas_stats = getBobinasStats($mysqli);
+$insumos_stats = getInsumosStats($mysqli);
+$equipos_stats = getEquiposStats($mysqli);
+$users_stats = getUsersStats($mysqli);
 
 // Obtener movimientos de los últimos 6 meses
-$movements_query = "
-    SELECT 
-        DATE_FORMAT(movement_date, '%Y-%m') as month,
-        COUNT(CASE WHEN quantity > 0 THEN 1 END) as entradas,
-        COUNT(CASE WHEN quantity < 0 THEN 1 END) as salidas
-    FROM movements 
-    WHERE movement_date >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
-    GROUP BY DATE_FORMAT(movement_date, '%Y-%m')
-    ORDER BY month DESC
-    LIMIT 6
-";
-$movements = $mysqli->query($movements_query);
+$movements = getMonthlyMovements($mysqli, 6);
 
 // Obtener top categorías por valor
-$categories_query = "
-    SELECT 
-        c.name as category_name,
-        COUNT(p.product_id) as product_count,
-        SUM(p.quantity * p.price) as total_value
-    FROM categories c
-    LEFT JOIN products p ON c.category_id = p.category_id
-    WHERE p.product_id IS NOT NULL
-    GROUP BY c.category_id, c.name
-    HAVING total_value > 0
-    ORDER BY total_value DESC
-    LIMIT 5
-";
-$categories = $mysqli->query($categories_query);
+$categories = getTopCategories($mysqli, 5);
 
 // Obtener top proveedores
-$suppliers_query = "
-    SELECT 
-        s.name as supplier_name,
-        COUNT(p.product_id) as product_count,
-        SUM(p.quantity * p.price) as total_value
-    FROM products p
-    LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
-    WHERE p.supplier_id IS NOT NULL
-    GROUP BY p.supplier_id
-    HAVING total_value > 0
-    ORDER BY total_value DESC
-    LIMIT 5
-";
-$suppliers = $mysqli->query($suppliers_query);
+$suppliers = getTopSuppliers($mysqli, 5);
 
-// Obtener productos más vendidos (por movimientos de salida)
-$top_products_query = "
-    SELECT 
-        p.product_name,
-        p.sku,
-        ABS(SUM(m.quantity)) as total_movements,
-        COUNT(m.movement_id) as movement_count
-    FROM movements m
-    JOIN products p ON m.product_id = p.product_id
-    WHERE m.quantity < 0
-    GROUP BY p.product_id, p.product_name, p.sku
-    ORDER BY total_movements DESC
-    LIMIT 10
-";
-$top_products = $mysqli->query($top_products_query);
+// Obtener productos más vendidos
+$top_products = getTopProducts($mysqli, 10);
 
-// Obtener estadísticas de cotizaciones
-$quotes_stats_query = "
-    SELECT 
-        COUNT(*) as total_quotes,
-        COUNT(DISTINCT cliente_id) as unique_clients,
-        SUM(total) as total_sales,
-        AVG(total) as avg_quote_value
-    FROM cotizaciones
-";
-$quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
+// Obtener productos con stock bajo
+$low_stock_products = getLowStockProducts($mysqli, 10);
 ?>
 
 <!DOCTYPE html>
@@ -299,6 +237,18 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
             font-size: 0.8rem;
             color: #666;
         }
+        .alert-stock {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+        .alert-stock .alert-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
         @media (max-width: 900px) {
             .main-content { 
                 width: calc(100vw - 70px); 
@@ -319,20 +269,34 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
             Reportes y Estadísticas
         </div>
 
+        <!-- Alertas de stock bajo -->
+        <?php if ($low_stock_products && $low_stock_products->num_rows > 0): ?>
+        <div class="alert-stock">
+            <div class="alert-title">
+                <i class="bi bi-exclamation-triangle"></i> 
+                Productos con Stock Bajo
+            </div>
+            <div class="alert-content">
+                Tienes <?= $low_stock_products->num_rows ?> productos que requieren atención inmediata.
+                <a href="#low-stock-section" class="btn btn-sm btn-warning ms-2">Ver Detalles</a>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Estadísticas principales -->
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-icon">
                     <i class="bi bi-box-seam"></i>
                 </div>
-                <div class="stat-number"><?= number_format($stats['total_products'] ?? 0) ?></div>
+                <div class="stat-number"><?= formatNumber($stats['total_products'] ?? 0) ?></div>
                 <div class="stat-label">Total de Productos</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">
                     <i class="bi bi-currency-dollar"></i>
                 </div>
-                <div class="stat-number">$<?= number_format($stats['total_value'] ?? 0, 0, ',', '.') ?></div>
+                <div class="stat-number"><?= formatCurrency($stats['total_value'] ?? 0) ?></div>
                 <div class="stat-label">Valor Total del Inventario</div>
             </div>
             <div class="stat-card">
@@ -353,15 +317,29 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                 <div class="stat-icon">
                     <i class="bi bi-file-earmark-text"></i>
                 </div>
-                <div class="stat-number"><?= number_format($quotes_stats['total_quotes'] ?? 0) ?></div>
+                <div class="stat-number"><?= formatNumber($quotes_stats['total_quotes'] ?? 0) ?></div>
                 <div class="stat-label">Total Cotizaciones</div>
             </div>
             <div class="stat-card">
                 <div class="stat-icon">
                     <i class="bi bi-people"></i>
                 </div>
-                <div class="stat-number"><?= number_format($quotes_stats['unique_clients'] ?? 0) ?></div>
+                <div class="stat-number"><?= formatNumber($quotes_stats['unique_clients'] ?? 0) ?></div>
                 <div class="stat-label">Clientes Únicos</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <i class="bi bi-arrow-left-right"></i>
+                </div>
+                <div class="stat-number"><?= formatNumber($bobinas_stats['total_bobinas'] ?? 0) ?></div>
+                <div class="stat-label">Total Bobinas</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <i class="bi bi-box2"></i>
+                </div>
+                <div class="stat-number"><?= formatNumber($insumos_stats['total_insumos'] ?? 0) ?></div>
+                <div class="stat-label">Total Insumos</div>
             </div>
         </div>
 
@@ -406,6 +384,7 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                             <th>Categoría</th>
                             <th>Productos</th>
                             <th>Valor Total</th>
+                            <th>Precio Promedio</th>
                             <th>Porcentaje</th>
                             <th>Progreso</th>
                         </tr>
@@ -416,18 +395,19 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                                 <tr>
                                     <td><strong><?= htmlspecialchars($category['category_name']) ?></strong></td>
                                     <td><?= $category['product_count'] ?></td>
-                                    <td>$<?= number_format($category['total_value'], 0, ',', '.') ?></td>
-                                    <td><?= round(($category['total_value'] / ($stats['total_value'] ?? 1)) * 100, 1) ?>%</td>
+                                    <td><?= formatCurrency($category['total_value']) ?></td>
+                                    <td><?= formatCurrency($category['avg_price']) ?></td>
+                                    <td><?= getPercentage($category['total_value'], $stats['total_value'] ?? 1) ?>%</td>
                                     <td style="width: 200px;">
                                         <div class="progress-custom">
-                                            <div class="progress-bar-custom" style="width: <?= ($category['total_value'] / ($stats['total_value'] ?? 1)) * 100 ?>%"></div>
+                                            <div class="progress-bar-custom" style="width: <?= getPercentage($category['total_value'], $stats['total_value'] ?? 1) ?>%"></div>
                                         </div>
                                     </td>
                                 </tr>
                             <?php endwhile; ?>
                         <?php else: ?>
                             <tr>
-                                <td colspan="5" class="text-center text-muted">No hay datos de categorías disponibles</td>
+                                <td colspan="6" class="text-center text-muted">No hay datos de categorías disponibles</td>
                             </tr>
                         <?php endif; ?>
                     </tbody>
@@ -455,7 +435,7 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                             <th>Proveedor</th>
                             <th>Productos</th>
                             <th>Valor Total</th>
-                            <th>Promedio por Producto</th>
+                            <th>Precio Promedio</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -464,8 +444,8 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                                 <tr>
                                     <td><strong><?= htmlspecialchars($supplier['supplier_name']) ?></strong></td>
                                     <td><?= $supplier['product_count'] ?></td>
-                                    <td>$<?= number_format($supplier['total_value'], 0, ',', '.') ?></td>
-                                    <td>$<?= number_format($supplier['total_value'] / $supplier['product_count'], 0, ',', '.') ?></td>
+                                    <td><?= formatCurrency($supplier['total_value']) ?></td>
+                                    <td><?= formatCurrency($supplier['avg_price']) ?></td>
                                 </tr>
                             <?php endwhile; ?>
                         <?php else: ?>
@@ -498,8 +478,10 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                             <th>#</th>
                             <th>Producto</th>
                             <th>SKU</th>
+                            <th>Categoría</th>
                             <th>Movimientos</th>
                             <th>Frecuencia</th>
+                            <th>Valor Ventas</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -509,13 +491,68 @@ $quotes_stats = $mysqli->query($quotes_stats_query)->fetch_assoc();
                                     <td><strong><?= $rank ?></strong></td>
                                     <td><?= htmlspecialchars($product['product_name']) ?></td>
                                     <td><code><?= htmlspecialchars($product['sku']) ?></code></td>
-                                    <td><?= number_format($product['total_movements']) ?></td>
+                                    <td><?= htmlspecialchars($product['category_name'] ?? 'Sin categoría') ?></td>
+                                    <td><?= formatNumber($product['total_movements']) ?></td>
                                     <td><?= $product['movement_count'] ?> veces</td>
+                                    <td><?= formatCurrency($product['total_sales_value']) ?></td>
                                 </tr>
                             <?php $rank++; endwhile; ?>
                         <?php else: ?>
                             <tr>
-                                <td colspan="5" class="text-center text-muted">No hay datos de productos vendidos disponibles</td>
+                                <td colspan="7" class="text-center text-muted">No hay datos de productos vendidos disponibles</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Productos con stock bajo -->
+        <div class="report-section" id="low-stock-section">
+            <div class="report-header">
+                <h5 class="report-title">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    Productos con Stock Bajo
+                </h5>
+                <div class="export-buttons">
+                    <button class="btn-export btn-excel" onclick="exportToExcel('low-stock')">
+                        <i class="bi bi-file-earmark-excel"></i> Excel
+                    </button>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Producto</th>
+                            <th>SKU</th>
+                            <th>Stock Actual</th>
+                            <th>Stock Mínimo</th>
+                            <th>Categoría</th>
+                            <th>Proveedor</th>
+                            <th>Precio</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($low_stock_products && $low_stock_products->num_rows > 0): ?>
+                            <?php while ($product = $low_stock_products->fetch_assoc()): ?>
+                                <tr>
+                                    <td><strong><?= htmlspecialchars($product['product_name']) ?></strong></td>
+                                    <td><code><?= htmlspecialchars($product['sku']) ?></code></td>
+                                    <td>
+                                        <span class="badge bg-<?= $product['quantity'] == 0 ? 'danger' : 'warning' ?>">
+                                            <?= $product['quantity'] ?>
+                                        </span>
+                                    </td>
+                                    <td><?= $product['min_stock'] ?></td>
+                                    <td><?= htmlspecialchars($product['category_name'] ?? 'Sin categoría') ?></td>
+                                    <td><?= htmlspecialchars($product['supplier_name'] ?? 'Sin proveedor') ?></td>
+                                    <td><?= formatCurrency($product['price']) ?></td>
+                                </tr>
+                            <?php endwhile; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="7" class="text-center text-muted">No hay productos con stock bajo</td>
                             </tr>
                         <?php endif; ?>
                     </tbody>

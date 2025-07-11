@@ -1,11 +1,19 @@
 <?php
 require_once '../auth/middleware.php';
-require_once '../connection.php';
+require_once 'functions.php';
 
+// Obtener fechas del formulario o usar valores por defecto
 $fecha_inicio = $_GET['fecha_inicio'] ?? date('Y-m-01');
 $fecha_fin = $_GET['fecha_fin'] ?? date('Y-m-d');
 
-// Obtener estadísticas del período
+// Validar fechas
+$fechas_validas = validateReportDates($fecha_inicio, $fecha_fin);
+if (!$fechas_validas) {
+    $fecha_inicio = date('Y-m-01');
+    $fecha_fin = date('Y-m-d');
+}
+
+// Obtener estadísticas del período usando las funciones auxiliares
 $stats_query = "
     SELECT 
         COUNT(DISTINCT m.movement_id) as total_movements,
@@ -14,8 +22,10 @@ $stats_query = "
         COUNT(DISTINCT m.product_id) as productos_movidos,
         COUNT(DISTINCT c.cotizacion_id) as cotizaciones,
         SUM(CASE WHEN m.quantity < 0 THEN ABS(m.quantity) ELSE 0 END) as unidades_vendidas,
-        SUM(c.total) as total_ventas
+        SUM(CASE WHEN m.quantity < 0 THEN ABS(m.quantity) * p.price ELSE 0 END) as valor_ventas,
+        SUM(c.total) as total_cotizaciones
     FROM movements m
+    LEFT JOIN products p ON m.product_id = p.product_id
     LEFT JOIN cotizaciones c ON DATE(c.fecha_cotizacion) BETWEEN ? AND ?
     WHERE DATE(m.movement_date) BETWEEN ? AND ?
 ";
@@ -25,32 +35,23 @@ $stmt->execute();
 $stats = $stmt->get_result()->fetch_assoc();
 
 // Obtener movimientos diarios del período
-$daily_movements_query = "
-    SELECT 
-        DATE(movement_date) as fecha,
-        COUNT(CASE WHEN quantity > 0 THEN 1 END) as entradas,
-        COUNT(CASE WHEN quantity < 0 THEN 1 END) as salidas
-    FROM movements 
-    WHERE DATE(movement_date) BETWEEN ? AND ?
-    GROUP BY DATE(movement_date)
-    ORDER BY fecha
-";
-$stmt = $mysqli->prepare($daily_movements_query);
-$stmt->bind_param('ss', $fecha_inicio, $fecha_fin);
-$stmt->execute();
-$daily_movements = $stmt->get_result();
+$daily_movements = getMovementsByPeriod($mysqli, $fecha_inicio, $fecha_fin);
 
 // Obtener productos más movidos
 $top_products_query = "
     SELECT 
         p.product_name,
         p.sku,
+        p.price,
+        c.name as category_name,
         ABS(SUM(m.quantity)) as total_movimientos,
-        COUNT(m.movement_id) as frecuencia
+        COUNT(m.movement_id) as frecuencia,
+        SUM(CASE WHEN m.quantity < 0 THEN ABS(m.quantity) * p.price ELSE 0 END) as valor_ventas
     FROM movements m
     JOIN products p ON m.product_id = p.product_id
+    LEFT JOIN categories c ON p.category_id = c.category_id
     WHERE DATE(m.movement_date) BETWEEN ? AND ?
-    GROUP BY p.product_id, p.product_name, p.sku
+    GROUP BY p.product_id, p.product_name, p.sku, p.price, c.name
     ORDER BY total_movimientos DESC
     LIMIT 10
 ";
@@ -60,19 +61,47 @@ $stmt->execute();
 $top_products = $stmt->get_result();
 
 // Obtener cotizaciones del período
-$quotes_query = "
+$quotes = getQuotesByPeriod($mysqli, $fecha_inicio, $fecha_fin);
+
+// Obtener categorías más movidas
+$top_categories_query = "
     SELECT 
-        cliente_nombre,
-        total,
-        fecha_cotizacion
-    FROM cotizaciones 
-    WHERE DATE(fecha_cotizacion) BETWEEN ? AND ?
-    ORDER BY fecha_cotizacion DESC
+        c.name as categoria,
+        COUNT(m.movement_id) as movimientos,
+        SUM(ABS(m.quantity)) as unidades_movidas,
+        SUM(CASE WHEN m.quantity < 0 THEN ABS(m.quantity) * p.price ELSE 0 END) as valor_ventas
+    FROM movements m
+    JOIN products p ON m.product_id = p.product_id
+    JOIN categories c ON p.category_id = c.category_id
+    WHERE DATE(m.movement_date) BETWEEN ? AND ?
+    GROUP BY c.category_id, c.name
+    ORDER BY movimientos DESC
+    LIMIT 5
 ";
-$stmt = $mysqli->prepare($quotes_query);
+$stmt = $mysqli->prepare($top_categories_query);
 $stmt->bind_param('ss', $fecha_inicio, $fecha_fin);
 $stmt->execute();
-$quotes = $stmt->get_result();
+$top_categories = $stmt->get_result();
+
+// Obtener proveedores más utilizados
+$top_suppliers_query = "
+    SELECT 
+        s.name as supplier_name,
+        COUNT(m.movement_id) as movimientos,
+        SUM(ABS(m.quantity)) as unidades_movidas,
+        SUM(CASE WHEN m.quantity < 0 THEN ABS(m.quantity) * p.price ELSE 0 END) as valor_ventas
+    FROM movements m
+    JOIN products p ON m.product_id = p.product_id
+    LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
+    WHERE DATE(m.movement_date) BETWEEN ? AND ? AND p.supplier_id IS NOT NULL
+    GROUP BY p.supplier_id, s.name
+    ORDER BY movimientos DESC
+    LIMIT 5
+";
+$stmt = $mysqli->prepare($top_suppliers_query);
+$stmt->bind_param('ss', $fecha_inicio, $fecha_fin);
+$stmt->execute();
+$top_suppliers = $stmt->get_result();
 ?>
 
 <!DOCTYPE html>
@@ -158,6 +187,12 @@ $quotes = $stmt->get_result();
             height: 300px;
             margin: 20px 0;
         }
+        .table th {
+            background: #121866 !important;
+            color: #fff !important;
+            font-weight: 600;
+            border: none;
+        }
         @media (max-width: 900px) {
             .main-content { 
                 width: calc(100vw - 70px); 
@@ -208,28 +243,36 @@ $quotes = $stmt->get_result();
         <!-- Estadísticas del período -->
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-number"><?= $stats['total_movements'] ?? 0 ?></div>
+                <div class="stat-number"><?= formatNumber($stats['total_movements'] ?? 0) ?></div>
                 <div class="stat-label">Total Movimientos</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number"><?= $stats['entradas'] ?? 0 ?></div>
+                <div class="stat-number"><?= formatNumber($stats['entradas'] ?? 0) ?></div>
                 <div class="stat-label">Entradas</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number"><?= $stats['salidas'] ?? 0 ?></div>
+                <div class="stat-number"><?= formatNumber($stats['salidas'] ?? 0) ?></div>
                 <div class="stat-label">Salidas</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number"><?= $stats['productos_movidos'] ?? 0 ?></div>
+                <div class="stat-number"><?= formatNumber($stats['productos_movidos'] ?? 0) ?></div>
                 <div class="stat-label">Productos Movidos</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number"><?= $stats['unidades_vendidas'] ?? 0 ?></div>
+                <div class="stat-number"><?= formatNumber($stats['unidades_vendidas'] ?? 0) ?></div>
                 <div class="stat-label">Unidades Vendidas</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number">$<?= number_format($stats['total_ventas'] ?? 0, 0) ?></div>
-                <div class="stat-label">Total Ventas</div>
+                <div class="stat-number"><?= formatCurrency($stats['valor_ventas'] ?? 0) ?></div>
+                <div class="stat-label">Valor de Ventas</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number"><?= formatNumber($stats['cotizaciones'] ?? 0) ?></div>
+                <div class="stat-label">Cotizaciones</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number"><?= formatCurrency($stats['total_cotizaciones'] ?? 0) ?></div>
+                <div class="stat-label">Total Cotizaciones</div>
             </div>
         </div>
 
@@ -243,6 +286,80 @@ $quotes = $stmt->get_result();
             </div>
         </div>
 
+        <!-- Categorías más movidas -->
+        <div class="report-section">
+            <h5 class="section-title">
+                <i class="bi bi-tags"></i> Categorías Más Movidas
+            </h5>
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Categoría</th>
+                            <th>Movimientos</th>
+                            <th>Unidades Movidas</th>
+                            <th>Valor Ventas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($top_categories && $top_categories->num_rows > 0): ?>
+                            <?php $rank = 1; while ($category = $top_categories->fetch_assoc()): ?>
+                                <tr>
+                                    <td><strong><?= $rank ?></strong></td>
+                                    <td><?= htmlspecialchars($category['categoria']) ?></td>
+                                    <td><?= formatNumber($category['movimientos']) ?></td>
+                                    <td><?= formatNumber($category['unidades_movidas']) ?></td>
+                                    <td><?= formatCurrency($category['valor_ventas']) ?></td>
+                                </tr>
+                            <?php $rank++; endwhile; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted">No hay movimientos en este período</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Proveedores más utilizados -->
+        <div class="report-section">
+            <h5 class="section-title">
+                <i class="bi bi-truck"></i> Proveedores Más Utilizados
+            </h5>
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Proveedor</th>
+                            <th>Movimientos</th>
+                            <th>Unidades Movidas</th>
+                            <th>Valor Ventas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($top_suppliers && $top_suppliers->num_rows > 0): ?>
+                            <?php $rank = 1; while ($supplier = $top_suppliers->fetch_assoc()): ?>
+                                <tr>
+                                    <td><strong><?= $rank ?></strong></td>
+                                    <td><?= htmlspecialchars($supplier['supplier_name']) ?></td>
+                                    <td><?= formatNumber($supplier['movimientos']) ?></td>
+                                    <td><?= formatNumber($supplier['unidades_movidas']) ?></td>
+                                    <td><?= formatCurrency($supplier['valor_ventas']) ?></td>
+                                </tr>
+                            <?php $rank++; endwhile; ?>
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="5" class="text-center text-muted">No hay datos de proveedores en este período</td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- Productos más movidos -->
         <div class="report-section">
             <h5 class="section-title">
@@ -250,13 +367,15 @@ $quotes = $stmt->get_result();
             </h5>
             <div class="table-responsive">
                 <table class="table table-striped">
-                    <thead class="table-dark">
+                    <thead>
                         <tr>
                             <th>#</th>
                             <th>Producto</th>
                             <th>SKU</th>
+                            <th>Categoría</th>
                             <th>Movimientos</th>
                             <th>Frecuencia</th>
+                            <th>Valor Ventas</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -266,13 +385,15 @@ $quotes = $stmt->get_result();
                                     <td><strong><?= $rank ?></strong></td>
                                     <td><?= htmlspecialchars($product['product_name']) ?></td>
                                     <td><code><?= htmlspecialchars($product['sku']) ?></code></td>
-                                    <td><?= number_format($product['total_movimientos']) ?></td>
+                                    <td><?= htmlspecialchars($product['category_name'] ?? 'Sin categoría') ?></td>
+                                    <td><?= formatNumber($product['total_movimientos']) ?></td>
                                     <td><?= $product['frecuencia'] ?> veces</td>
+                                    <td><?= formatCurrency($product['valor_ventas']) ?></td>
                                 </tr>
                             <?php $rank++; endwhile; ?>
                         <?php else: ?>
                             <tr>
-                                <td colspan="5" class="text-center text-muted">No hay movimientos en este período</td>
+                                <td colspan="7" class="text-center text-muted">No hay movimientos en este período</td>
                             </tr>
                         <?php endif; ?>
                     </tbody>
@@ -287,25 +408,35 @@ $quotes = $stmt->get_result();
             </h5>
             <div class="table-responsive">
                 <table class="table table-striped">
-                    <thead class="table-dark">
+                    <thead>
                         <tr>
+                            <th>Número</th>
                             <th>Cliente</th>
                             <th>Total</th>
                             <th>Fecha</th>
+                            <th>Estado</th>
+                            <th>Usuario</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if ($quotes && $quotes->num_rows > 0): ?>
                             <?php while ($quote = $quotes->fetch_assoc()): ?>
                                 <tr>
+                                    <td><code><?= htmlspecialchars($quote['numero_cotizacion']) ?></code></td>
                                     <td><?= htmlspecialchars($quote['cliente_nombre']) ?></td>
-                                    <td>$<?= number_format($quote['total'], 2) ?></td>
+                                    <td><?= formatCurrency($quote['total']) ?></td>
                                     <td><?= date('d/m/Y', strtotime($quote['fecha_cotizacion'])) ?></td>
+                                    <td>
+                                        <span class="badge bg-<?= $quote['estado'] == 'Aprobada' ? 'success' : ($quote['estado'] == 'Enviada' ? 'info' : 'secondary') ?>">
+                                            <?= htmlspecialchars($quote['estado']) ?>
+                                        </span>
+                                    </td>
+                                    <td><?= htmlspecialchars($quote['usuario_nombre'] ?? 'Sistema') ?></td>
                                 </tr>
                             <?php endwhile; ?>
                         <?php else: ?>
                             <tr>
-                                <td colspan="3" class="text-center text-muted">No hay cotizaciones en este período</td>
+                                <td colspan="6" class="text-center text-muted">No hay cotizaciones en este período</td>
                             </tr>
                         <?php endif; ?>
                     </tbody>
