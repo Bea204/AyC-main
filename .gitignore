@@ -1,0 +1,28 @@
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore environment files
+*.env
+
+# Ignore local configuration
+*.local
+*.log
+
+# Ignore XAMPP-specific files (if applicable)
+xampp-control.ini
+*.bak
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+
+# Ignore OS-specific files
+ehthumbs.db
+Icon?
+Desktop.ini
+
+# Ignore vendor or external packages (if you ever use any)
+vendor/
+node_modules/
+
