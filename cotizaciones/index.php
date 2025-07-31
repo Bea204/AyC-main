@@ -94,9 +94,10 @@ $cotizaciones = $stmt->get_result();
 $stats_query = "
     SELECT 
         COUNT(*) as total_cotizaciones,
-        SUM(total) as total_valor,
-        AVG(total) as promedio_valor
+        SUM(CASE WHEN estado_id != 4 THEN total ELSE 0 END) as total_valor,
+        AVG(CASE WHEN estado_id != 4 THEN total ELSE NULL END) as promedio_valor
     FROM cotizaciones
+    WHERE estado_id != 4
 ";
 $stats_result = $mysqli->query($stats_query);
 $stats = $stats_result->fetch_assoc();
