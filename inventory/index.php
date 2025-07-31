@@ -465,6 +465,14 @@ $total_paginas = max(1, ceil($total_productos_filtrados / $por_pagina));
                         </a>
                     </div>
                 </div>
+                <div class="col-md-2">
+                    <label class="form-label">&nbsp;</label>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-success w-100" onclick="imprimirHistorialStock()">
+                            <i class="bi bi-printer"></i> Historial Stock
+                        </button>
+                    </div>
+                </div>
             </form>
         </div>
 
@@ -733,6 +741,26 @@ $total_paginas = max(1, ceil($total_productos_filtrados / $por_pagina));
             // Cerrar modal
             const modal = bootstrap.Modal.getInstance(document.getElementById('modalImprimirEtiqueta'));
             modal.hide();
+        }
+        
+        function imprimirHistorialStock() {
+            // Obtener los filtros actuales
+            const categoria = document.getElementById('categoria').value;
+            const busqueda = document.getElementById('busqueda').value;
+            const estado = document.getElementById('estado').value;
+            
+            // Construir URL con parámetros
+            let url = 'print_stock_history.php?';
+            const params = new URLSearchParams();
+            
+            if (categoria) params.append('categoria', categoria);
+            if (busqueda) params.append('busqueda', busqueda);
+            if (estado) params.append('estado', estado);
+            
+            url += params.toString();
+            
+            // Abrir ventana de impresión
+            window.open(url, '_blank', 'width=800,height=600');
         }
     </script>
 </body>
